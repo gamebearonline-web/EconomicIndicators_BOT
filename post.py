@@ -46,10 +46,10 @@ def format_line(label, d0, v0, d1, v1):
 def post_to_x(text: str):
     # X: POST /2/tweets :contentReference[oaicite:8]{index=8}
     auth = OAuth1(
-        os.environ["X_CONSUMER_KEY"],
-        os.environ["X_CONSUMER_SECRET"],
+        os.environ["X_API_KEY"],
+        os.environ["X_API_SECRET"],
         os.environ["X_ACCESS_TOKEN"],
-        os.environ["X_ACCESS_TOKEN_SECRET"],
+        os.environ["X_ACCESS_SECRET"],
     )
     url = "https://api.x.com/2/tweets"
     r = requests.post(url, json={"text": text}, auth=auth, timeout=30)
