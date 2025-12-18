@@ -1,0 +1,38 @@
+name: Save CPI Nowcast (Cleveland Fed)
+
+on:
+  workflow_dispatch:
+  # 任意：DSTずれ回避で毎平日2回回すなら（UTC）
+  # schedule:
+  #   - cron: "0 12 * * 1-5"
+  #   - cron: "0 13 * * 1-5"
+
+jobs:
+  save:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: fred-xbot-state-v2
+
+      - name: Install deps
+        run: pip install requests beautifulsoup4
+
+      - name: Save nowcast
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python bot.py save_nowcast
+
+      - name: Save state cache
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: fred-xbot-state-v2
