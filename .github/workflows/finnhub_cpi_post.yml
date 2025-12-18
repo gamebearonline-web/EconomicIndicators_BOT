@@ -1,8 +1,7 @@
 name: Post CPI (Finnhub Free)
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
+  # GAS など外部から叩く専用
   workflow_dispatch:
 
 jobs:
