@@ -99,14 +99,13 @@ def build_jobs_text():
 
 # ---- CPI ----
 def build_cpi_text():
-    cpi = valid_values(fred_obs("CPIAUCSL", limit=36))    # 指数
-    core = valid_values(fred_obs("CPILFESL", limit=36))   # 指数
+    cpi = valid_values(fred_obs("CPIAUCSL", limit=36))
+    core = valid_values(fred_obs("CPILFESL", limit=36))
 
     (d0, v0), (d1, v1), (d2, v2) = cpi[0], cpi[1], cpi[2]
     cpi_mom = pct(v0, v1)
     cpi_mom_prev = pct(v1, v2)
 
-    # YoY（12か月前）
     (_, v12) = cpi[12]
     (_, v13) = cpi[13]
     cpi_yoy = pct(v0, v12)
@@ -116,26 +115,34 @@ def build_cpi_text():
     core_mom = pct(cv0, cv1)
     core_mom_prev = pct(cv1, cv2)
 
+    # Nowcast（YYYY-MM で同月を狙う）
+    target_ym = d0[:7]  # "YYYY-MM"
+    fc_cpi_mom, fc_core_mom, fc_cpi_yoy = cleveland_nowcast_for_month(target_ym)
+
     mm = month_jp(d0)
+
+    def fmt_forecast(x):
+        return "—" if x is None else f"{x:.2f}％"
 
     text = "\n".join([
         f"🇺🇸消費者物価指数（CPI）（{mm}）",
         "🟢CPI（前月比）",
         f"結果：{cpi_mom:.2f}％",
-        "予想：—",
+        f"予想：{fmt_forecast(fc_cpi_mom)}",
         f"前回：{cpi_mom_prev:.2f}％",
         "",
         "🟢CPI（前年比）",
         f"結果：{cpi_yoy:.2f}％",
-        "予想：—",
+        f"予想：{fmt_forecast(fc_cpi_yoy)}",
         f"前回：{cpi_yoy_prev:.2f}％",
         "",
         "🟢コアCPI（前月比）",
         f"結果：{core_mom:.2f}％",
-        "予想：—",
+        f"予想：{fmt_forecast(fc_core_mom)}",
         f"前回：{core_mom_prev:.2f}％",
     ])
     return d0, text
+
 
 def main():
     state = load_state()
