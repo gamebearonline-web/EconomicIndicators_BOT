@@ -18,10 +18,10 @@ RETRY_INTERVAL = 30      # 30秒おき
 # X API
 def post_to_x(text: str):
     auth = OAuth1(
-        os.environ["X_CONSUMER_KEY"],
-        os.environ["X_CONSUMER_SECRET"],
+        os.environ["X_API_KEY"],
+        os.environ["X_API_SECRET"],
         os.environ["X_ACCESS_TOKEN"],
-        os.environ["X_ACCESS_TOKEN_SECRET"],
+        os.environ["X_ACCESS_SECRET"],
     )
     r = requests.post(
         "https://api.x.com/2/tweets",
