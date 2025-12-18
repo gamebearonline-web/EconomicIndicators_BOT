@@ -1,11 +1,9 @@
-name: Post CPI (FRED + Saved Nowcast)
+name: Post CPI (Finnhub Free)
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
-  # 任意：DSTずれ回避で毎平日2回回すなら（UTC）
-  # schedule:
-  #   - cron: "32 12 * * 1-5"
-  #   - cron: "32 13 * * 1-5"
 
 jobs:
   post:
@@ -17,26 +15,26 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Restore state cache
+      - name: Restore state
         uses: actions/cache@v4
         with:
-          path: state.json
-          key: fred-xbot-state-v2
+          path: bots/finnhub_cpi/state.json
+          key: state-finnhub-cpi-v1
 
       - name: Install deps
-        run: pip install requests requests-oauthlib beautifulsoup4
+        run: pip install requests requests-oauthlib
 
-      - name: Post CPI if updated
+      - name: Run CPI bot
         env:
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          X_CONSUMER_KEY: ${{ secrets.X_CONSUMER_KEY }}
-          X_CONSUMER_SECRET: ${{ secrets.X_CONSUMER_SECRET }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          X_CONSUMER_KEY: ${{ secrets.X_API_KEY }}
+          X_CONSUMER_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
-        run: python bot.py post_cpi
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+        run: python bots/finnhub_cpi/finnhub_cpi_bot.py
 
-      - name: Save state cache
+      - name: Save state
         uses: actions/cache@v4
         with:
-          path: state.json
-          key: fred-xbot-state-v2
+          path: bots/finnhub_cpi/state.json
+          key: state-finnhub-cpi-v1
