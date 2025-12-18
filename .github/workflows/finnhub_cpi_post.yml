@@ -1,7 +1,6 @@
 name: Post CPI (Finnhub Free)
 
 on:
-  # GAS など外部から叩く専用
   workflow_dispatch:
 
 jobs:
@@ -17,7 +16,7 @@ jobs:
       - name: Restore state
         uses: actions/cache@v4
         with:
-          path: bots/finnhub_cpi/state.json
+          path: finnhub_cpi/state.json
           key: state-finnhub-cpi-v1
 
       - name: Install deps
@@ -30,10 +29,10 @@ jobs:
           X_CONSUMER_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_SECRET }}
-        run: python bots/finnhub_cpi/finnhub_cpi_bot.py
+        run: python finnhub_cpi/finnhub_cpi_bot.py
 
       - name: Save state
         uses: actions/cache@v4
         with:
-          path: bots/finnhub_cpi/state.json
+          path: finnhub_cpi/state.json
           key: state-finnhub-cpi-v1
