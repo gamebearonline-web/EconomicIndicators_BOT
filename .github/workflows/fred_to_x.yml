@@ -22,6 +22,10 @@ jobs:
       - name: Install deps
         run: pip install requests requests-oauthlib
 
+      - name: Install deps
+        run: pip install requests requests-oauthlib beautifulsoup4
+
+
       - name: Run bot
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
