@@ -160,5 +160,92 @@ def main():
     if not posted_any:
         print("No updates; nothing posted.")
 
+
+from decimal import Decimal, ROUND_HALF_UP
+from bs4 import BeautifulSoup
+
+NOWCAST_URL = "https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting"
+
+def round_half_up(x: float, ndigits: int = 2) -> float:
+    q = Decimal("1." + "0" * ndigits)  # 例: ndigits=2 -> Decimal("1.00")
+    return float(Decimal(str(x)).quantize(q, rounding=ROUND_HALF_UP))
+
+def cleveland_nowcast_for_month(target_ym: str):
+    """
+    target_ym: "YYYY-MM"（例: "2025-12"）
+    return: (cpi_mom, core_mom, cpi_yoy) いずれも float or None
+    """
+    r = requests.get(NOWCAST_URL, timeout=30)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    def pick_from_table(table_title_contains: str, col_name: str):
+        # ページ内の該当テーブルを探して、target_ym行の指定列を返す（空欄なら None）
+        # table_title_contains: "month-over-month" or "year-over-year" のような断片
+        headers = soup.find_all(["h2", "h3", "h4", "h5"])
+        table = None
+        for h in headers:
+            if h.get_text(strip=True).lower().find(table_title_contains) >= 0:
+                # 次に出てくる table を拾う
+                nxt = h.find_next("table")
+                if nxt:
+                    table = nxt
+                    break
+        if table is None:
+            return None
+
+        # ヘッダー行
+        ths = table.find_all("th")
+        # テーブル構造が変わった時に壊れにくいよう、行ごとに解析
+        rows = table.find_all("tr")
+        if not rows:
+            return None
+
+        # 1行目がヘッダー想定
+        header_cells = [c.get_text(" ", strip=True) for c in rows[0].find_all(["th", "td"])]
+        if col_name not in header_cells:
+            return None
+        col_idx = header_cells.index(col_name)
+
+        # データ行から "Month" を "December 2025" のように持っているので target_ym と突合
+        for tr in rows[1:]:
+            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
+            if not cells:
+                continue
+            month_text = cells[0]  # "December 2025"
+            # "December 2025" -> "2025-12"
+            try:
+                dt = datetime.strptime(month_text, "%B %Y")
+                ym = dt.strftime("%Y-%m")
+            except Exception:
+                continue
+
+            if ym == target_ym:
+                if col_idx >= len(cells):
+                    return None
+                raw = cells[col_idx]
+                if raw == "" or raw is None:
+                    return None
+                try:
+                    return float(raw)
+                except Exception:
+                    return None
+        return None
+
+    # MoMテーブルから CPI / Core CPI
+    cpi_mom = pick_from_table("month-over-month", "CPI")
+    core_mom = pick_from_table("month-over-month", "Core CPI")
+
+    # YoYテーブルから CPI
+    cpi_yoy = pick_from_table("year-over-year", "CPI")
+
+    # 四捨五入（小数点2位）
+    cpi_mom = None if cpi_mom is None else round_half_up(cpi_mom, 2)
+    core_mom = None if core_mom is None else round_half_up(core_mom, 2)
+    cpi_yoy = None if cpi_yoy is None else round_half_up(cpi_yoy, 2)
+
+    return cpi_mom, core_mom, cpi_yoy
+
+
 if __name__ == "__main__":
     main()
