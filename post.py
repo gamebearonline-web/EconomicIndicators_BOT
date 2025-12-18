@@ -1,12 +1,15 @@
-import json
-import os
-import requests
+import json, os, sys, requests
+from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
+from bs4 import BeautifulSoup
 from requests_oauthlib import OAuth1
 
-FRED_API_KEY = os.environ["FRED_API_KEY"]
+FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 FRED_BASE = "https://api.stlouisfed.org/fred"
 STATE_PATH = "state.json"
+NOWCAST_URL = "https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting"
 
+# --- utils ---
 def load_state():
     if not os.path.exists(STATE_PATH):
         return {}
@@ -17,6 +20,20 @@ def save_state(state):
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
+def round_half_up(x: float, ndigits: int = 2) -> float:
+    q = Decimal("1." + "0" * ndigits)     # 2桁なら 1.00
+    return float(Decimal(str(x)).quantize(q, rounding=ROUND_HALF_UP))
+
+def pct(new, old):
+    return (new / old - 1.0) * 100.0
+
+def month_jp(date_str: str) -> str:
+    return f"{int(date_str[5:7])}月"
+
+def dash_or_pct(x):
+    return "—" if x is None else f"{x:.2f}％"
+
+# --- FRED ---
 def fred_obs(series_id: str, limit: int = 36):
     r = requests.get(
         f"{FRED_BASE}/series/observations",
@@ -40,13 +57,88 @@ def valid_values(obs):
             out.append((o["date"], float(v)))
     return out
 
-def pct(new, old):
-    return (new / old - 1.0) * 100.0
+# --- Cleveland Fed Nowcast (HTML table) ---
+def fetch_nowcast_tables():
+    r = requests.get(NOWCAST_URL, timeout=30)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
 
-def month_jp(date_str: str) -> str:
-    m = int(date_str[5:7])
-    return f"{m}月"
+    # このページは本文中に
+    # "Inflation, month-over-month percent change" と
+    # "Inflation, year-over-year percent change" の表がある :contentReference[oaicite:2]{index=2}
+    text = soup.get_text("\n", strip=True)
 
+    # 表をざっくり取得（ページ構造変更に耐えるため “最初の2つの大きい表” を拾う）
+    tables = soup.find_all("table")
+    if len(tables) < 2:
+        raise RuntimeError("Nowcast tables not found (page structure changed?)")
+    return tables[0], tables[1]  # だいたい MoM, YoY の順
+
+def table_to_rows(table):
+    rows = []
+    for tr in table.find_all("tr"):
+        cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
+        if cells:
+            rows.append(cells)
+    return rows
+
+def pick_month_value(rows, target_month_label, col_name):
+    # rows[0] is header: ["Month","CPI","Core CPI",...,"Updated"]
+    header = rows[0]
+    if col_name not in header:
+        return None
+    idx = header.index(col_name)
+    for r in rows[1:]:
+        if not r:
+            continue
+        if r[0] == target_month_label:
+            if idx >= len(r):
+                return None
+            raw = r[idx].strip()
+            if raw == "":
+                return None
+            try:
+                return float(raw)
+            except:
+                return None
+    return None
+
+def save_nowcast_for_target_month(state, target_month_label: str):
+    mom_table, yoy_table = fetch_nowcast_tables()
+    mom_rows = table_to_rows(mom_table)
+    yoy_rows = table_to_rows(yoy_table)
+
+    cpi_mom = pick_month_value(mom_rows, target_month_label, "CPI")
+    core_mom = pick_month_value(mom_rows, target_month_label, "Core CPI")
+    cpi_yoy = pick_month_value(yoy_rows, target_month_label, "CPI")
+
+    # 実績が出た月は空欄になり得る（公式注記）:contentReference[oaicite:3]{index=3}
+    cpi_mom = None if cpi_mom is None else round_half_up(cpi_mom, 2)
+    core_mom = None if core_mom is None else round_half_up(core_mom, 2)
+    cpi_yoy = None if cpi_yoy is None else round_half_up(cpi_yoy, 2)
+
+    state["nowcast"] = {
+        "target_month_label": target_month_label,  # 例: "December 2025"
+        "cpi_mom": cpi_mom,
+        "cpi_yoy": cpi_yoy,
+        "core_cpi_mom": core_mom,
+        "saved_at_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": "Cleveland Fed Inflation Nowcasting",
+    }
+    return state["nowcast"]
+
+def guess_target_month_label_from_fred():
+    # 発表直前に保存する想定：FREDの最新CPI月の「次の月」を狙う
+    cpi = valid_values(fred_obs("CPIAUCSL", limit=24))
+    latest_date = cpi[0][0]  # "YYYY-MM-01"
+    dt = datetime.strptime(latest_date, "%Y-%m-%d")
+    # 次月
+    y = dt.year + (1 if dt.month == 12 else 0)
+    m = 1 if dt.month == 12 else dt.month + 1
+    target = datetime(y, m, 1)
+    return target.strftime("%B %Y")  # "December 2025"
+
+# --- X post ---
 def post_to_x(text: str):
     auth = OAuth1(
         os.environ["X_CONSUMER_KEY"],
@@ -58,201 +150,92 @@ def post_to_x(text: str):
     r.raise_for_status()
     return r.json()
 
-# ---- 雇用統計 ----
-def build_jobs_text():
-    pay = valid_values(fred_obs("PAYEMS", limit=36))            # レベル（千人）
-    unr = valid_values(fred_obs("UNRATE", limit=12))            # %
-    ahe = valid_values(fred_obs("CES0500000003", limit=12))     # $/hour
-
-    # PAYEMS：最新2点で前年差分（千人→万人）
-    (d0, v0), (d1, v1) = pay[0], pay[1]
-    nfp_10k = (v0 - v1) / 10.0
-
-    # UNRATE：結果=最新、前回=1つ前
-    (du0, uu0), (du1, uu1) = unr[0], unr[1]
-
-    # 平均時給：前月比%（レベルから計算）
-    (da0, aa0), (da1, aa1), (da2, aa2) = ahe[0], ahe[1], ahe[2]
-    ahe_mom = pct(aa0, aa1)
-    ahe_mom_prev = pct(aa1, aa2)
-
-    mm = month_jp(d0)
-
-    text = "\n".join([
-        f"🇺🇸雇用統計（{mm}）",
-        "🟢非農業部門雇用者数",
-        f"結果：{nfp_10k:.1f}万人",
-        "予想：—",
-        f"前回：{((v1 - pay[2][1]) / 10.0):.1f}万人",  # 前回月の前年差分
-        "",
-        "🟢失業率",
-        f"結果：{uu0:.1f}％",
-        "予想：—",
-        f"前回：{uu1:.1f}％",
-        "",
-        "🟢平均時給（前月比）",
-        f"結果：{ahe_mom:.2f}％",
-        "予想：—",
-        f"前回：{ahe_mom_prev:.2f}％",
-    ])
-    return d0, text  # d0 を「更新判定用の最新日付」に
-
-# ---- CPI ----
-def build_cpi_text():
+# --- CPI post composition ---
+def build_cpi_text_with_saved_nowcast(state):
     cpi = valid_values(fred_obs("CPIAUCSL", limit=36))
     core = valid_values(fred_obs("CPILFESL", limit=36))
 
     (d0, v0), (d1, v1), (d2, v2) = cpi[0], cpi[1], cpi[2]
-    cpi_mom = pct(v0, v1)
-    cpi_mom_prev = pct(v1, v2)
+    cpi_mom = round_half_up(pct(v0, v1), 2)
+    cpi_mom_prev = round_half_up(pct(v1, v2), 2)
 
-    (_, v12) = cpi[12]
-    (_, v13) = cpi[13]
-    cpi_yoy = pct(v0, v12)
-    cpi_yoy_prev = pct(v1, v13)
+    # YoY
+    (_, v12), (_, v13) = cpi[12], cpi[13]
+    cpi_yoy = round_half_up(pct(v0, v12), 2)
+    cpi_yoy_prev = round_half_up(pct(v1, v13), 2)
 
+    # core mom
     (dc0, cv0), (dc1, cv1), (dc2, cv2) = core[0], core[1], core[2]
-    core_mom = pct(cv0, cv1)
-    core_mom_prev = pct(cv1, cv2)
-
-    # Nowcast（YYYY-MM で同月を狙う）
-    target_ym = d0[:7]  # "YYYY-MM"
-    fc_cpi_mom, fc_core_mom, fc_cpi_yoy = cleveland_nowcast_for_month(target_ym)
+    core_mom = round_half_up(pct(cv0, cv1), 2)
+    core_mom_prev = round_half_up(pct(cv1, cv2), 2)
 
     mm = month_jp(d0)
 
-    def fmt_forecast(x):
-        return "—" if x is None else f"{x:.2f}％"
+    saved = state.get("nowcast", {})
+    fc_cpi_mom = saved.get("cpi_mom")
+    fc_cpi_yoy = saved.get("cpi_yoy")
+    fc_core_mom = saved.get("core_cpi_mom")
+    saved_at = saved.get("saved_at_utc")
+
+    footer = ""
+    if saved_at:
+        footer = f"\n\n※予想：Cleveland Fed Nowcast（発表前保存 / {saved_at}）"
 
     text = "\n".join([
         f"🇺🇸消費者物価指数（CPI）（{mm}）",
         "🟢CPI（前月比）",
         f"結果：{cpi_mom:.2f}％",
-        f"予想：{fmt_forecast(fc_cpi_mom)}",
+        f"予想：{dash_or_pct(fc_cpi_mom)}",
         f"前回：{cpi_mom_prev:.2f}％",
         "",
         "🟢CPI（前年比）",
         f"結果：{cpi_yoy:.2f}％",
-        f"予想：{fmt_forecast(fc_cpi_yoy)}",
+        f"予想：{dash_or_pct(fc_cpi_yoy)}",
         f"前回：{cpi_yoy_prev:.2f}％",
         "",
         "🟢コアCPI（前月比）",
         f"結果：{core_mom:.2f}％",
-        f"予想：{fmt_forecast(fc_core_mom)}",
+        f"予想：{dash_or_pct(fc_core_mom)}",
         f"前回：{core_mom_prev:.2f}％",
-    ])
-    return d0, text
+    ]) + footer
 
+    return d0, text  # d0 が最新観測日
+
+# --- entrypoints ---
+def cmd_save_nowcast():
+    state = load_state()
+    target_label = guess_target_month_label_from_fred()
+    saved = save_nowcast_for_target_month(state, target_label)
+    save_state(state)
+    print(f"Saved nowcast for {target_label}: {saved}")
+
+def cmd_post_cpi():
+    state = load_state()
+
+    # FRED更新判定（CPIAUCSLの最新日付）
+    cpi = valid_values(fred_obs("CPIAUCSL", limit=5))
+    latest_date = cpi[0][0]
+    if state.get("cpi_last_date") == latest_date:
+        print("No CPI update; nothing posted.")
+        return
+
+    d0, text = build_cpi_text_with_saved_nowcast(state)
+    post_to_x(text)
+
+    state["cpi_last_date"] = d0
+    save_state(state)
+    print("Posted CPI.")
 
 def main():
-    state = load_state()
-    posted_any = False
-
-    # 雇用統計：PAYEMSの最新日付で更新判定
-    jobs_date, jobs_text = build_jobs_text()
-    if state.get("jobs_last_date") != jobs_date:
-        post_to_x(jobs_text)
-        state["jobs_last_date"] = jobs_date
-        posted_any = True
-
-    # CPI：CPIAUCSLの最新日付で更新判定
-    cpi_date, cpi_text = build_cpi_text()
-    if state.get("cpi_last_date") != cpi_date:
-        post_to_x(cpi_text)
-        state["cpi_last_date"] = cpi_date
-        posted_any = True
-
-    save_state(state)
-
-    if not posted_any:
-        print("No updates; nothing posted.")
-
-
-from decimal import Decimal, ROUND_HALF_UP
-from bs4 import BeautifulSoup
-
-NOWCAST_URL = "https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting"
-
-def round_half_up(x: float, ndigits: int = 2) -> float:
-    q = Decimal("1." + "0" * ndigits)  # 例: ndigits=2 -> Decimal("1.00")
-    return float(Decimal(str(x)).quantize(q, rounding=ROUND_HALF_UP))
-
-def cleveland_nowcast_for_month(target_ym: str):
-    """
-    target_ym: "YYYY-MM"（例: "2025-12"）
-    return: (cpi_mom, core_mom, cpi_yoy) いずれも float or None
-    """
-    r = requests.get(NOWCAST_URL, timeout=30)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    def pick_from_table(table_title_contains: str, col_name: str):
-        # ページ内の該当テーブルを探して、target_ym行の指定列を返す（空欄なら None）
-        # table_title_contains: "month-over-month" or "year-over-year" のような断片
-        headers = soup.find_all(["h2", "h3", "h4", "h5"])
-        table = None
-        for h in headers:
-            if h.get_text(strip=True).lower().find(table_title_contains) >= 0:
-                # 次に出てくる table を拾う
-                nxt = h.find_next("table")
-                if nxt:
-                    table = nxt
-                    break
-        if table is None:
-            return None
-
-        # ヘッダー行
-        ths = table.find_all("th")
-        # テーブル構造が変わった時に壊れにくいよう、行ごとに解析
-        rows = table.find_all("tr")
-        if not rows:
-            return None
-
-        # 1行目がヘッダー想定
-        header_cells = [c.get_text(" ", strip=True) for c in rows[0].find_all(["th", "td"])]
-        if col_name not in header_cells:
-            return None
-        col_idx = header_cells.index(col_name)
-
-        # データ行から "Month" を "December 2025" のように持っているので target_ym と突合
-        for tr in rows[1:]:
-            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
-            if not cells:
-                continue
-            month_text = cells[0]  # "December 2025"
-            # "December 2025" -> "2025-12"
-            try:
-                dt = datetime.strptime(month_text, "%B %Y")
-                ym = dt.strftime("%Y-%m")
-            except Exception:
-                continue
-
-            if ym == target_ym:
-                if col_idx >= len(cells):
-                    return None
-                raw = cells[col_idx]
-                if raw == "" or raw is None:
-                    return None
-                try:
-                    return float(raw)
-                except Exception:
-                    return None
-        return None
-
-    # MoMテーブルから CPI / Core CPI
-    cpi_mom = pick_from_table("month-over-month", "CPI")
-    core_mom = pick_from_table("month-over-month", "Core CPI")
-
-    # YoYテーブルから CPI
-    cpi_yoy = pick_from_table("year-over-year", "CPI")
-
-    # 四捨五入（小数点2位）
-    cpi_mom = None if cpi_mom is None else round_half_up(cpi_mom, 2)
-    core_mom = None if core_mom is None else round_half_up(core_mom, 2)
-    cpi_yoy = None if cpi_yoy is None else round_half_up(cpi_yoy, 2)
-
-    return cpi_mom, core_mom, cpi_yoy
-
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: python bot.py save_nowcast|post_cpi")
+    mode = sys.argv[1].strip()
+    if mode == "save_nowcast":
+        cmd_save_nowcast()
+    elif mode == "post_cpi":
+        cmd_post_cpi()
+    else:
+        raise SystemExit("Unknown mode")
 
 if __name__ == "__main__":
     main()
