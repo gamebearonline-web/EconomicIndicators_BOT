@@ -47,6 +47,8 @@ def month_jp_from_fred_date(date_str: str) -> str:
 
 # ========= FRED =========
 def fred_observations(series_id: str, limit: int = 36):
+    if not FRED_API_KEY:
+        raise RuntimeError("FRED_API_KEY is missing.")
     r = requests.get(
         f"{FRED_BASE}/series/observations",
         params={
@@ -76,6 +78,9 @@ def compute_mom_yoy(series_obs):
       mom, mom_prev,
       yoy, yoy_prev
     """
+    if len(series_obs) < 14:
+        raise RuntimeError("Not enough observations to compute MoM/YoY.")
+
     (d0, v0), (d1, v1), (d2, v2) = series_obs[0], series_obs[1], series_obs[2]
     mom = round_half_up(pct_change(v0, v1), 2)
     mom_prev = round_half_up(pct_change(v1, v2), 2)
@@ -122,7 +127,7 @@ def pick_value(rows, month_label: str, col_name: str):
                 return None
             try:
                 return float(raw)
-            except:
+            except Exception:
                 return None
     return None
 
@@ -180,9 +185,9 @@ def post_to_x(text: str):
     r = requests.post("https://api.x.com/2/tweets", json={"text": text}, auth=auth, timeout=30)
     r.raise_for_status()
 
+# ====== Text builders ======
 def build_text_all(month: str, cpi, core, fc):
-    # User requested a specific style; keep it simple and consistent.
-    # If it exceeds 280 chars, we automatically split into two posts in post_cpi().
+    # 280超えは post_cpi() 側で自動分割
     lines = [
         f"🇺🇸消費者物価指数（CPI）（{month}）",
         "🟢CPI（前月比）",
@@ -194,6 +199,7 @@ def build_text_all(month: str, cpi, core, fc):
         f"結果：{core['mom']:.2f}%",
         f"予想：{fmt_pct(fc.get('core_mom'))}",
         f"前回：{core['mom_prev']:.2f}%",
+        "",
         "🟢CPI（前年比）",
         f"結果：{cpi['yoy']:.2f}%",
         f"予想：{fmt_pct(fc.get('cpi_yoy'))}",
@@ -203,7 +209,6 @@ def build_text_all(month: str, cpi, core, fc):
         f"結果：{core['yoy']:.2f}%",
         f"予想：{fmt_pct(fc.get('core_yoy'))}",
         f"前回：{core['yoy_prev']:.2f}%",
-        "",
     ]
     return "\n".join(lines).strip()
 
@@ -237,83 +242,88 @@ def build_text_yoy(month: str, cpi, core, fc):
     ]
     return "\n".join(lines).strip()
 
+# ========= Main post logic =========
 def post_cpi():
-    force = os.environ.get("FORCE_POST", "0") == "1"
     state = load_state()
     post_type = os.environ.get("POST_TYPE", "ALL").strip().upper()
+    force = os.environ.get("FORCE_POST", "0") == "1"
 
     cpi_obs = fred_observations(SERIES_CPI, limit=36)
     core_obs = fred_observations(SERIES_CORE, limit=36)
 
     d0, cpi_mom, cpi_mom_prev, cpi_yoy, cpi_yoy_prev = compute_mom_yoy(cpi_obs)
-    dc0, core_mom, core_mom_prev, core_yoy, core_yoy_prev = compute_mom_yoy(core_obs)
+    _,  core_mom, core_mom_prev, core_yoy, core_yoy_prev = compute_mom_yoy(core_obs)
 
-    # FRED update guard
+    # 二重投稿防止（ALLのときだけ、FRED更新が無ければスキップ）
     last_posted_date = state.get("fred_cpi_last_date")
-    if (not force) and last_posted_date == d0 and post_type == "ALL":
+    if (not force) and post_type == "ALL" and last_posted_date == d0:
         print("No new CPI release detected (same latest date); skipping.")
         return
 
-
     month = month_jp_from_fred_date(d0)
 
-    # load saved nowcast
+    # 保存済みNowcast（発表後に空欄になる問題の回避）
     fc = state.get("nowcast", {})
-    # If saved target month label does not match the CPI month, still show saved values (better than blank).
-    # You can tighten this rule later if you want.
 
     cpi = {"mom": cpi_mom, "mom_prev": cpi_mom_prev, "yoy": cpi_yoy, "yoy_prev": cpi_yoy_prev}
     core = {"mom": core_mom, "mom_prev": core_mom_prev, "yoy": core_yoy, "yoy_prev": core_yoy_prev}
 
-    # compose
+    posted_keys = state.get("posted_keys", [])
+
     if post_type == "MOM":
-        force = os.environ.get("FORCE_POST", "0") == "1"
-
-        key = f"CPI_ALL_{d0}"
-        if (not force) and key in state.get("posted_keys", []):
-        print("Already posted ALL; skipping.")
-        return
-
+        key = f"CPI_MOM_{d0}"
+        if (not force) and key in posted_keys:
+            print("Already posted MOM; skipping.")
+            return
 
         text = build_text_mom(month, cpi, core, fc)
         post_to_x(text)
-        state.setdefault("posted_keys", []).append(key)
 
-    elif post_type == "YOY":
+        state.setdefault("posted_keys", []).append(key)
+        save_state(state)
+        print("Posted CPI MOM successfully.")
+        return
+
+    if post_type == "YOY":
         key = f"CPI_YOY_{d0}"
-        if key in state.get("posted_keys", []):
+        if (not force) and key in posted_keys:
             print("Already posted YOY; skipping.")
             return
+
         text = build_text_yoy(month, cpi, core, fc)
         post_to_x(text)
-        state.setdefault("posted_keys", []).append(key)
 
+        state.setdefault("posted_keys", []).append(key)
+        save_state(state)
+        print("Posted CPI YOY successfully.")
+        return
+
+    # ALL
+    key = f"CPI_ALL_{d0}"
+    if (not force) and key in posted_keys:
+        print("Already posted ALL; skipping.")
+        return
+
+    text_all = build_text_all(month, cpi, core, fc)
+
+    # 280字超え対策（安全に分割）
+    if len(text_all) > 275:
+        text_mom = build_text_mom(month, cpi, core, fc)
+        text_yoy = build_text_yoy(month, cpi, core, fc)
+        post_to_x(text_mom)
+        post_to_x(text_yoy)
     else:
-        key = f"CPI_ALL_{d0}"
-        if key in state.get("posted_keys", []):
-            print("Already posted ALL; skipping.")
-            return
+        post_to_x(text_all)
 
-        text_all = build_text_all(month, cpi, core, fc)
-
-        # If too long, split automatically into MOM + YOY (safe fallback)
-        if len(text_all) > 275:
-            text_mom = build_text_mom(month, cpi, core, fc)
-            text_yoy = build_text_yoy(month, cpi, core, fc)
-            post_to_x(text_mom)
-            post_to_x(text_yoy)
-        else:
-            post_to_x(text_all)
-
-        state.setdefault("posted_keys", []).append(key)
-        state["fred_cpi_last_date"] = d0
-
+    state.setdefault("posted_keys", []).append(key)
+    state["fred_cpi_last_date"] = d0
     save_state(state)
-    print("Posted CPI successfully.")
+    print("Posted CPI ALL successfully.")
 
 def main():
     if len(sys.argv) < 2:
         raise SystemExit("Usage: python cpi_bot.py save_nowcast|post_cpi")
+
     cmd = sys.argv[1].strip().lower()
     if cmd == "save_nowcast":
         save_nowcast()
