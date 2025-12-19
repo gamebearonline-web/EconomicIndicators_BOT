@@ -1,0 +1,44 @@
+name: Post CPI (FRED + Saved Nowcast)
+
+on:
+  workflow_dispatch:
+    inputs:
+      post_type:
+        description: "ALL / MOM / YOY"
+        required: false
+        default: "ALL"
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore state
+        uses: actions/cache@v4
+        with:
+          path: cpi_fred_nowcast/state.json
+          key: state-cpi-fred-nowcast-v1
+
+      - name: Install deps
+        run: pip install requests requests-oauthlib beautifulsoup4
+
+      - name: Post CPI
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          X_CONSUMER_KEY: ${{ secrets.X_API_KEY }}
+          X_CONSUMER_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          POST_TYPE: ${{ inputs.post_type }}
+        run: python cpi_fred_nowcast/cpi_bot.py post_cpi
+
+      - name: Save state
+        uses: actions/cache@v4
+        with:
+          path: cpi_fred_nowcast/state.json
+          key: state-cpi-fred-nowcast-v1
