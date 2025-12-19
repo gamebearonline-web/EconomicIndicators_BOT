@@ -7,6 +7,11 @@ on:
         description: "ALL / MOM / YOY"
         required: false
         default: "ALL"
+      force:
+        description: "1 to force post"
+        required: false
+        default: "0"
+
 
 jobs:
   post:
