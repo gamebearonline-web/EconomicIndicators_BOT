@@ -40,6 +40,7 @@ jobs:
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_SECRET }}
           POST_TYPE: ${{ inputs.post_type }}
+          FORCE_POST: ${{ inputs.force }}
         run: python cpi_fred_nowcast/cpi_bot.py post_cpi
 
       - name: Save state
