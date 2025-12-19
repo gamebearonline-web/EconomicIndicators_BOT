@@ -238,6 +238,7 @@ def build_text_yoy(month: str, cpi, core, fc):
     return "\n".join(lines).strip()
 
 def post_cpi():
+    force = os.environ.get("FORCE_POST", "0") == "1"
     state = load_state()
     post_type = os.environ.get("POST_TYPE", "ALL").strip().upper()
 
@@ -249,9 +250,10 @@ def post_cpi():
 
     # FRED update guard
     last_posted_date = state.get("fred_cpi_last_date")
-    if last_posted_date == d0 and post_type == "ALL":
+    if (not force) and last_posted_date == d0 and post_type == "ALL":
         print("No new CPI release detected (same latest date); skipping.")
         return
+
 
     month = month_jp_from_fred_date(d0)
 
