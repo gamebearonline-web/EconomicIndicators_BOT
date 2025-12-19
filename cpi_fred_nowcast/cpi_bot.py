@@ -267,10 +267,14 @@ def post_cpi():
 
     # compose
     if post_type == "MOM":
-        key = f"CPI_MOM_{d0}"
-        if key in state.get("posted_keys", []):
-            print("Already posted MOM; skipping.")
-            return
+        force = os.environ.get("FORCE_POST", "0") == "1"
+
+        key = f"CPI_ALL_{d0}"
+        if (not force) and key in state.get("posted_keys", []):
+        print("Already posted ALL; skipping.")
+        return
+
+
         text = build_text_mom(month, cpi, core, fc)
         post_to_x(text)
         state.setdefault("posted_keys", []).append(key)
