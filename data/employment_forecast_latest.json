@@ -1,0 +1,10 @@
+{
+  "ym": "2025-11",
+  "monthLabel": "11月",
+  "forecast": {
+    "ahe_mom": 0.3,
+    "ahe_yoy": 4.0,
+    "nfp_man": 20.2,
+    "unemployment_rate": 4.2
+  }
+}
