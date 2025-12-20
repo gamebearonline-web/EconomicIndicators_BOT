@@ -7,8 +7,6 @@ from employment_report.compose_text import compose
 from employment_report.x_post import post_to_x
 
 def _need_values(actual: dict) -> bool:
-    # 発表直後に null になりがちなものを最低限チェック
-    # どれか取れてなければ再試行
     keys = ["nfp_man_actual", "ur_actual", "ahe_mom_actual", "ahe_yoy_actual"]
     return all(actual.get(k) is not None for k in keys)
 
@@ -16,22 +14,22 @@ def main():
     fired_at = datetime.now(timezone.utc).isoformat()
     print(f"[employment] start at {fired_at}Z")
 
-    # 1) Forecast from Minkabu (retry)
-    fc = retry(fetch_minkabu_forecast, tries=4, sleep_sec=3.0, name="minkabu_forecast")
-    ym = fc["ym"]
-    month_label = fc["monthLabel"]
-    forecast = fc["forecast"]
+    # 1) Forecast from JSON (no web)
+    fcwrap = fetch_minkabu_forecast()
+    ym = fcwrap["ym"]
+    month_label = fcwrap["monthLabel"]
+    forecast = fcwrap["forecast"]
 
-    print(f"[employment] ym={ym} month={month_label} forecast={forecast} debug={fc.get('debug')}")
+    print(f"[employment] forecast ym={ym} month={month_label} forecast={forecast}")
 
-    # 2) Actual/Previous from BLS (release直後の反映遅延があるので retry)
+    # 2) Actual from BLS (release直後の反映遅延対策で retry)
     def _fetch_actual():
         a = get_actuals(ym)
         if not _need_values(a):
             raise RuntimeError(f"BLS returned incomplete values: {a}")
         return a
 
-    actual = retry(_fetch_actual, tries=8, sleep_sec=6.0, name="bls_actuals")  # 最大 ~42秒待つ
+    actual = retry(_fetch_actual, tries=8, sleep_sec=6.0, name="bls_actuals")  # 最大 ~42秒
     print(f"[employment] actual={actual}")
 
     # 3) Compose tweet
