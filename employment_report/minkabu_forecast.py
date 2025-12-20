@@ -1,94 +1,66 @@
-import re
+# employment_report/minkabu_forecast.py
+
 import requests
 from bs4 import BeautifulSoup
 
 URL = "https://fx.minkabu.jp/indicators/US-NFP"
 
-def _parse_pct(s: str):
-    t = (s or "").strip().replace(" ", "")
-    if t in ("---", "", "N/A"):
+def _pct(x):
+    if not x or x == "---":
         return None
-    m = re.fullmatch(r"(-?\d+(?:\.\d+)?)%", t)
-    return float(m.group(1)) if m else None
+    return float(x.replace("%", "").strip())
 
-def _parse_man(s: str):
-    t = (s or "").strip().replace(" ", "")
-    if t in ("---", "", "N/A"):
+def _man(x):
+    if not x or x == "---":
         return None
-    m = re.fullmatch(r"(-?\d+(?:\.\d+)?)万人", t)
-    return float(m.group(1)) if m else None
+    return float(x.replace("万人", "").strip())
 
-def _parse_month(s: str):
-    m = re.search(r"(\d{4})年(\d{1,2})月", s)
-    if not m:
-        return None
-    year = int(m.group(1))
-    month = int(m.group(2))
-    return {
-        "ym": f"{year:04d}-{month:02d}",
-        "monthLabel": f"{month}月",
-        "year": year,
-        "month": month,
-    }
-
-def fetch_minkabu_forecast() -> dict:
+def fetch_minkabu_forecast():
     r = requests.get(
         URL,
         headers={
-            "User-Agent": "EconomicIndicators_BOT/1.0 (+https://github.com/gamebearonline-web/EconomicIndicators_BOT)",
+            "User-Agent": "EconomicIndicators_BOT/1.0",
             "Accept-Language": "ja,en;q=0.8",
         },
-        timeout=25,
+        timeout=20,
     )
     r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "lxml")
-    text = soup.get_text("\n", strip=True)
 
-    # "YYYY年MM月 ..." の行を拾う
-    lines = [ln.strip() for ln in text.split("\n") if re.match(r"^\d{4}年\d{1,2}月", ln.strip())]
+    # 指標テーブル（最初のtableがNFP）
+    table = soup.find("table")
+    if not table:
+        raise RuntimeError("minkabu: table not found")
 
-    if not lines:
-        raise RuntimeError("minkabu: monthly lines not found (page structure changed?)")
+    rows = table.find_all("tr")
+    if len(rows) < 2:
+        raise RuntimeError("minkabu: no data rows")
 
-    rows = []
-    for ln in lines:
-        tokens = re.split(r"\s+", ln)
-        # 期待：13トークン以上（CPIの時の表と同型）
-        if len(tokens) < 13:
-            continue
-        m = _parse_month(tokens[0])
-        if not m:
-            continue
+    # 1行目はヘッダ、2行目が最新
+    cols = [c.get_text(strip=True) for c in rows[1].find_all("td")]
+    if len(cols) < 11:
+        raise RuntimeError(f"minkabu: unexpected columns {cols}")
 
-        rows.append({
-            **m,
-            "nfp_forecast_man": _parse_man(tokens[1]),
-            "ur_forecast_pct": _parse_pct(tokens[4]),
-            "ahe_mom_forecast_pct": _parse_pct(tokens[7]),
-            "ahe_yoy_forecast_pct": _parse_pct(tokens[10]),
-            "raw": ln,
-        })
-
-    if not rows:
-        raise RuntimeError("minkabu: could not parse any valid row")
-
-    # 新しい月が上に来ている想定。念のため ym 降順。
-    rows.sort(key=lambda x: x["ym"], reverse=True)
-
-    picked = rows[0]
+    # 列順（2025-12現在）
+    # 0: 発表月
+    # 1: 雇用者数(予想)
+    # 4: 失業率(予想)
+    # 7: 平均時給MoM(予想)
+    # 10: 平均時給YoY(予想)
+    ym_text = cols[0]  # 2025年11月
+    year = int(ym_text[:4])
+    month = int(ym_text[5:-1])
 
     return {
-        "source": URL,
-        "ym": picked["ym"],
-        "monthLabel": picked["monthLabel"],
-        "year": picked["year"],
-        "month": picked["month"],
+        "ym": f"{year}-{month:02d}",
+        "monthLabel": f"{month}月",
+        "year": year,
+        "month": month,
         "forecast": {
-            "nfp_man": picked["nfp_forecast_man"],                  # 万人
-            "unemployment_rate": picked["ur_forecast_pct"],         # %
-            "ahe_mom": picked["ahe_mom_forecast_pct"],              # %
-            "ahe_yoy": picked["ahe_yoy_forecast_pct"],              # %
-        },
-        "debug": {"raw": picked["raw"]},
+            "nfp_man": _man(cols[1]),
+            "unemployment_rate": _pct(cols[4]),
+            "ahe_mom": _pct(cols[7]),
+            "ahe_yoy": _pct(cols[10]),
+        }
     }
