@@ -1,66 +1,80 @@
 # employment_report/minkabu_forecast.py
-
+import re
 import requests
 from bs4 import BeautifulSoup
 
 URL = "https://fx.minkabu.jp/indicators/US-NFP"
 
-def _pct(x):
-    if not x or x == "---":
-        return None
-    return float(x.replace("%", "").strip())
+_RE_ROW = re.compile(
+    r"^(?P<year>\d{4})年(?P<month>\d{1,2})月\s+"
+    r"(?P<nfp_fc>-?\d+(?:\.\d+)?)万人\s+(?P<nfp_ac>-?\d+(?:\.\d+)?)万人\s+(?P<nfp_pr>-?\d+(?:\.\d+)?|---)万人\s+"
+    r"(?P<ur_fc>-?\d+(?:\.\d+)?)%\s+(?P<ur_ac>-?\d+(?:\.\d+)?)%\s+(?P<ur_pr>-?\d+(?:\.\d+)?|---)%\s+"
+    r"(?P<ahe_mom_fc>-?\d+(?:\.\d+)?)%\s+(?P<ahe_mom_ac>-?\d+(?:\.\d+)?)%\s+(?P<ahe_mom_pr>-?\d+(?:\.\d+)?|---)%\s+"
+    r"(?P<ahe_yoy_fc>-?\d+(?:\.\d+)?)%\s+(?P<ahe_yoy_ac>-?\d+(?:\.\d+)?)%\s+(?P<ahe_yoy_pr>-?\d+(?:\.\d+)?|---)%\s*$"
+)
 
-def _man(x):
-    if not x or x == "---":
+def _f(x: str):
+    if x is None:
         return None
-    return float(x.replace("万人", "").strip())
+    x = x.strip()
+    return None if x == "---" else float(x)
 
-def fetch_minkabu_forecast():
+def fetch_minkabu_forecast() -> dict:
     r = requests.get(
         URL,
         headers={
-            "User-Agent": "EconomicIndicators_BOT/1.0",
+            "User-Agent": "EconomicIndicators_BOT/1.0 (+https://github.com/gamebearonline-web/EconomicIndicators_BOT)",
             "Accept-Language": "ja,en;q=0.8",
         },
-        timeout=20,
+        timeout=25,
     )
     r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "lxml")
 
-    # 指標テーブル（最初のtableがNFP）
-    table = soup.find("table")
-    if not table:
-        raise RuntimeError("minkabu: table not found")
+    # strip=True だと行が潰れることがあるので、stripしない
+    raw_text = soup.get_text("\n", strip=False)
 
-    rows = table.find_all("tr")
-    if len(rows) < 2:
-        raise RuntimeError("minkabu: no data rows")
+    # 行単位で「YYYY年MM月 ...」を拾ってパース
+    rows = []
+    for ln in raw_text.splitlines():
+        line = " ".join(ln.split())  # 連続空白を1つに正規化
+        if not re.match(r"^\d{4}年\d{1,2}月", line):
+            continue
+        m = _RE_ROW.match(line)
+        if not m:
+            continue
 
-    # 1行目はヘッダ、2行目が最新
-    cols = [c.get_text(strip=True) for c in rows[1].find_all("td")]
-    if len(cols) < 11:
-        raise RuntimeError(f"minkabu: unexpected columns {cols}")
+        year = int(m.group("year"))
+        month = int(m.group("month"))
+        ym = f"{year:04d}-{month:02d}"
 
-    # 列順（2025-12現在）
-    # 0: 発表月
-    # 1: 雇用者数(予想)
-    # 4: 失業率(予想)
-    # 7: 平均時給MoM(予想)
-    # 10: 平均時給YoY(予想)
-    ym_text = cols[0]  # 2025年11月
-    year = int(ym_text[:4])
-    month = int(ym_text[5:-1])
+        rows.append({
+            "ym": ym,
+            "year": year,
+            "month": month,
+            "monthLabel": f"{month}月",
+            "forecast": {
+                "nfp_man": _f(m.group("nfp_fc")),
+                "unemployment_rate": _f(m.group("ur_fc")),
+                "ahe_mom": _f(m.group("ahe_mom_fc")),
+                "ahe_yoy": _f(m.group("ahe_yoy_fc")),
+            },
+            # デバッグ用に残す（必要ならrun.pyでprintできる）
+            "debug": {"raw_line": line},
+        })
 
-    return {
-        "ym": f"{year}-{month:02d}",
-        "monthLabel": f"{month}月",
-        "year": year,
-        "month": month,
-        "forecast": {
-            "nfp_man": _man(cols[1]),
-            "unemployment_rate": _pct(cols[4]),
-            "ahe_mom": _pct(cols[7]),
-            "ahe_yoy": _pct(cols[10]),
-        }
-    }
+    if not rows:
+        raise RuntimeError("minkabu: could not parse any valid row (page structure changed?)")
+
+    # 最新月が上にあるが、念のためym降順
+    rows.sort(key=lambda x: x["ym"], reverse=True)
+
+    # 「予想」が --- の月が混ざる場合があるので、予想が揃ってる行を優先
+    for row in rows:
+        fc = row["forecast"]
+        if all(fc.get(k) is not None for k in ["nfp_man", "unemployment_rate", "ahe_mom", "ahe_yoy"]):
+            return row
+
+    # それでもダメなら最新行を返す（発表直後など）
+    return rows[0]
