@@ -1,42 +1,29 @@
 # employment_report/minkabu_forecast.py
-import requests
+import json
+from pathlib import Path
 
-API_URL = "https://fx.minkabu.jp/api/indicator/US-NFP"
+DATA_FILE = Path("data/employment_forecast_latest.json")
 
 def fetch_minkabu_forecast() -> dict:
-    r = requests.get(
-        API_URL,
-        headers={
-            "User-Agent": "EconomicIndicators_BOT/1.0",
-            "Accept": "application/json",
-        },
-        timeout=20,
-    )
-    r.raise_for_status()
+    if not DATA_FILE.exists():
+        raise RuntimeError(f"forecast json not found: {DATA_FILE}")
 
-    j = r.json()
-    rows = j.get("data", [])
-    if not rows:
-        raise RuntimeError("minkabu api: empty data")
+    with DATA_FILE.open("r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    # 最新月が先頭
-    row = rows[0]
+    # 最低限のバリデーション
+    if "ym" not in data or "forecast" not in data:
+        raise RuntimeError("forecast json invalid: missing 'ym' or 'forecast'")
 
-    ym = row["date"]            # "2025-11"
-    year, month = ym.split("-")
-    month = int(month)
+    fc = data["forecast"]
+    required = ["ahe_mom", "ahe_yoy", "nfp_man", "unemployment_rate"]
+    for k in required:
+        if k not in fc:
+            raise RuntimeError(f"forecast json invalid: missing forecast.{k}")
 
-    fc = row.get("forecast", {})
+    # monthLabel が無い場合の保険
+    if "monthLabel" not in data:
+        month = int(data["ym"].split("-")[1])
+        data["monthLabel"] = f"{month}月"
 
-    return {
-        "ym": ym,
-        "year": int(year),
-        "month": month,
-        "monthLabel": f"{month}月",
-        "forecast": {
-            "nfp_man": fc.get("employment"),              # 万人
-            "unemployment_rate": fc.get("unemployment_rate"),
-            "ahe_mom": fc.get("ahe_mom"),
-            "ahe_yoy": fc.get("ahe_yoy"),
-        }
-    }
+    return data
