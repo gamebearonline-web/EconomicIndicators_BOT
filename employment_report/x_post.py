@@ -1,3 +1,5 @@
+# employment_report/x_post.py
+
 import os
 import requests
 from requests_oauthlib import OAuth1
@@ -9,15 +11,16 @@ def post_to_x(text: str) -> dict:
     access_secret = os.getenv("X_ACCESS_TOKEN_SECRET")
 
     if not all([api_key, api_secret, access_token, access_secret]):
-        raise RuntimeError("X secrets missing (X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET)")
+        raise RuntimeError("X API secrets are missing")
 
     auth = OAuth1(api_key, api_secret, access_token, access_secret)
 
-    r = requests.post(
+    res = requests.post(
         "https://api.twitter.com/2/tweets",
         auth=auth,
         json={"text": text},
-        timeout=25,
+        timeout=30,
     )
-    r.raise_for_status()
-    return r.json()
+
+    res.raise_for_status()
+    return res.json()
